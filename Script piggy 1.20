@@ -1,0 +1,426 @@
+--[[
+    PIGGY | UTILITY HUB V1.20 — OPTIMIZED & LIGHTWEIGHT VERSION
+    Otimizado para evitar travamentos (lag) e com todos os recursos desativados no início.
+--]]
+
+print("[PIGGY_HUB_V1.20_LIGHT] === INICIANDO UTILITY HUB OTIMIZADO ===")
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    repeat task.wait(0.1) until Players.LocalPlayer
+    LocalPlayer = Players.LocalPlayer
+end
+
+-- Anti-Kick Nativo
+pcall(function()
+    local oldNamecall
+    oldNamecall = hookmetatable(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        if string.lower(method) == "kick" then
+            return nil
+        end
+        return oldNamecall(self, ...)
+    end)
+end)
+
+-- Estado Inicial (TUDO DESATIVADO POR PADRÃO)
+local State = {
+    searchQuery = "",
+    targetPlayerName = "",
+    conns = {},
+    esp = {
+        players = false,
+        piggyBot = false,
+        piggyPlayer = false,
+        traitor = false,
+        items = false,
+        exits = false
+    },
+    move = {
+        speedOn = false,
+        speedVal = 24,
+        jumpOn = false,
+        jumpVal = 65,
+        noclip = false,
+        infJump = false,
+        godMode = false
+    },
+    auto = {
+        killPiggyActive = false,
+        killTraitorActive = false
+    },
+    vis = {
+        fullbright = false
+    },
+    cache = {
+        espObjects = {},
+        mapItems = {},
+        mapExits = {},
+        hazardParts = {}
+    }
+}
+
+local FRIENDLY_NPCS = {"doggy", "danny", "george", "bunny", "zizzy", "pony", "giraffy", "mimi", "willow", "tigry", "rash", "foxy", "soldier", "filly", "kraken", "tcb"}
+local STRICT_ESCAPE_ITEMS = {"key", "wrench", "hammer", "plank", "crowbar", "gasoline", "gas", "fuse", "battery", "gear", "lever", "handle", "cog", "code", "card", "keycard", "torch", "candle", "potion", "bone", "carrot", "grass", "apple", "scissors", "bullet", "gun", "fireextinguisher"}
+local BLACKLIST_NAMES = {"soup", "sopa", "plate", "prato", "table", "chair", "car", "vehicle", "truck", "cutscene", "prop", "decoration", "dummy", "spawn", "lobby", "seekout", "anim", "holder", "storage", "trap", "menu"}
+local HAZARD_KEYWORDS = {"acid", "water", "slime", "toxic", "kill", "laser", "ray", "electric", "death", "blade", "saw", "lava", "spike", "goo", "poison"}
+local EXIT_NAMES = {"escapedoor", "exitdoor", "escapegate", "maindoor", "exit", "escape"}
+
+local function addConn(c)
+    if typeof(c) == "RBXScriptConnection" then table.insert(State.conns, c) end
+    return c
+end
+
+local function getChar(pl) pl = pl or LocalPlayer return pl and pl.Character end
+local function getHrp(pl) local c = getChar(pl) return c and c:FindFirstChild("HumanoidRootPart") end
+local function getHum(pl) local c = getChar(pl) return c and c:FindFirstChildOfClass("Humanoid") end
+local function isAlive(pl) local h = getHum(pl) return h and h.Health > 0 end
+
+local function getDist(part)
+    local r = getHrp()
+    if not r or not part then return 99999 end
+    local ok, res = pcall(function() return (r.Position - part.Position).Magnitude end)
+    return ok and res or 99999
+end
+
+local function getBasePart(inst)
+    if not inst or not inst.Parent then return nil end
+    if inst:IsA("BasePart") then return inst end
+    if inst:IsA("Model") then return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart") end
+    return nil
+end
+
+local function isInGameRound()
+    local hrp = getHrp()
+    if not hrp then return false end
+    if workspace:FindFirstChild("Lobby") and hrp:IsDescendantOf(workspace.Lobby) then return false end
+    return true
+end
+
+local function isFriendlyNPC(objName)
+    local lower = string.lower(objName)
+    for _, npc in ipairs(FRIENDLY_NPCS) do
+        if string.find(lower, npc, 1, true) then return true end
+    end
+    return false
+end
+
+local function isItem(obj)
+    if not obj or not obj.Parent or not isInGameRound() then return false end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character and obj:IsDescendantOf(p.Character) then return false end
+    end
+    local nameLower = string.lower(obj.Name):gsub("%s+", "")
+    for _, badWord in ipairs(BLACKLIST_NAMES) do
+        if string.find(nameLower, badWord, 1, true) then return false end
+    end
+    if obj:IsA("Tool") or obj:FindFirstChildOfClass("TouchTransmitter") or obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChild("ItemPickupScript") then
+        for _, itemName in ipairs(STRICT_ESCAPE_ITEMS) do
+            if string.find(nameLower, itemName, 1, true) and getBasePart(obj) then return true end
+        end
+    end
+    return false
+end
+
+local function isExit(obj)
+    if not obj or not obj.Parent or not isInGameRound() then return false end
+    local nm = string.lower(obj.Name)
+    for _, word in ipairs(EXIT_NAMES) do
+        if string.find(nm, word, 1, true) and getBasePart(obj) then return true end
+    end
+    return false
+end
+
+local function isBot(obj)
+    if not obj or not obj:IsA("Model") or not isInGameRound() then return false end
+    if isFriendlyNPC(obj.Name) then return false end
+    for _, p in ipairs(Players:GetPlayers()) do if p.Character == obj then return false end end
+    local nm = string.lower(obj.Name)
+    if string.match(nm, "^%d%d%d%d%d+") or string.find(nm, "menu") or string.find(nm, "lobby") then return false end
+    for _, badWord in ipairs(BLACKLIST_NAMES) do if string.find(nm, badWord, 1, true) end end
+    local hum = obj:FindFirstChildOfClass("Humanoid")
+    local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("UpperTorso")
+    if not (hum and root) or hum.Health <= 0 then return false end
+    local myHrp = getHrp()
+    if myHrp and (root.Position - myHrp.Position).Magnitude > 250 then return false end
+    if string.find(nm, "piggy") or string.find(nm, "bot") or string.find(nm, "infected") or obj:FindFirstChild("Infected") or obj:FindFirstChild("Enemy") then return true end
+    return false
+end
+
+local function isPiggyPlayer(pl)
+    if not pl or not pl.Character or pl == LocalPlayer or not isInGameRound() then return false end
+    local char = pl.Character
+    if isFriendlyNPC(pl.Name) then return false end
+    if pl:FindFirstChild("IsPiggy") or char:FindFirstChild("Piggy") or char:FindFirstChild("Weapon") or char:FindFirstChild("Bat") or char:FindFirstChild("Club") or char:FindFirstChild("Sword") then return true end
+    if pl.Backpack and (pl.Backpack:FindFirstChild("Weapon") or pl.Backpack:FindFirstChild("Bat") or pl.Backpack:FindFirstChild("Club")) then return true end
+    if pl.Team and string.find(string.lower(pl.Team.Name), "piggy") then return true end
+    if char:GetAttribute("IsPiggy") == true or char:GetAttribute("Role") == "Piggy" or char:GetAttribute("Piggy") == true then return true end
+    return false
+end
+
+local function isTraitorPlayer(pl)
+    if not pl or not pl.Character or pl == LocalPlayer or not isInGameRound() then return false end
+    local char = pl.Character
+    if isFriendlyNPC(pl.Name) then return false end
+    if pl:FindFirstChild("IsTraitor") or char:FindFirstChild("Traitor") or char:FindFirstChild("Trap") or char:FindFirstChild("Knife") then return true end
+    if pl.Backpack and (pl.Backpack:FindFirstChild("Trap") or pl.Backpack:FindFirstChild("Knife")) then return true end
+    if char:GetAttribute("Role") == "Traitor" or (pl.Team and string.find(string.lower(pl.Team.Name), "traitor")) then return true end
+    return false
+end
+
+local function updateHazardCache()
+    State.cache.hazardParts = {}
+    if not State.move.godMode or not isInGameRound() then return end
+    for _, part in ipairs(workspace:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local pName = string.lower(part.Name)
+            for _, key in ipairs(HAZARD_KEYWORDS) do
+                if string.find(pName, key, 1, true) then
+                    table.insert(State.cache.hazardParts, part)
+                    part.CanTouch = false
+                    break
+                end
+            end
+        end
+    end
+end
+
+local function processGodMode()
+    if not State.move.godMode then return end
+    local hum = getHum()
+    if hum then
+        if hum.Health < hum.MaxHealth then hum.Health = hum.MaxHealth end
+        hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        for _, part in ipairs(State.cache.hazardParts) do if part and part.Parent then part.CanTouch = false end end
+    end
+end
+
+local function applyFullbright(enable)
+    if enable then
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+        Lighting.Brightness = 3
+        Lighting.ClockTime = 14
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 100000
+    else
+        Lighting.Brightness = 1
+        Lighting.GlobalShadows = true
+    end
+end
+
+-- Interface Rayfield
+local Window = Rayfield:CreateWindow({
+    Name = "Piggy | Utility Hub V1.20 Light",
+    LoadingTitle = "Carregando Hub...",
+    LoadingSubtitle = "Versão Otimizada sem travamentos",
+    Theme = "Green",
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false
+})
+
+local TabCombat = Window:CreateTab("Teleporte & Combate", 4483362458)
+
+TabCombat:CreateInput({
+    Name = "Buscar Jogador",
+    PlaceholderText = "Digite o nome da pessoa...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text) State.targetPlayerName = string.lower(text) end
+})
+
+TabCombat:CreateButton({
+    Name = "⚡ Teleportar para Jogador / Sala Escura",
+    Callback = function()
+        local myHrp = getHrp()
+        if not myHrp then return end
+        local foundTarget = false
+
+        -- 1. Se digitou o nome de um jogador na busca, teleporta até ele
+        if State.targetPlayerName ~= "" then
+            for _, pl in ipairs(Players:GetPlayers()) do
+                if pl ~= LocalPlayer then
+                    local pName = string.lower(pl.Name)
+                    local pDisp = string.lower(pl.DisplayName)
+                    if string.find(pName, State.targetPlayerName, 1, true) or string.find(pDisp, State.targetPlayerName, 1, true) then
+                        local targetHrp = getHrp(pl)
+                        if targetHrp then
+                            myHrp.CFrame = targetHrp.CFrame * CFrame.new(0, 0, 3)
+                            foundTarget = true
+                            Rayfield:Notify({Title = "Teleporte", Content = "Teleportado para: " .. pl.DisplayName, Duration = 2.5})
+                            break
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 2. Se não digitou nome ou não encontrou, teleporta para o Lobby/Sala Escura
+        if not foundTarget then
+            local lobby = workspace:FindFirstChild("Lobby") or workspace:FindFirstChild("SpawnLocation") or workspace:FindFirstChild("Spawn")
+            if lobby then
+                local p = getBasePart(lobby)
+                if p then
+                    myHrp.CFrame = p.CFrame * CFrame.new(0, 3, 0)
+                    foundTarget = true
+                    Rayfield:Notify({Title = "Teleporte", Content = "Teleportado para a Sala Escura / Spawn!", Duration = 2.5})
+                end
+            end
+        end
+
+        -- 3. Caso não ache o Lobby, teleporta para o Piggy ou outro jogador do mapa
+        if not foundTarget then
+            for _, pl in ipairs(Players:GetPlayers()) do
+                if pl ~= LocalPlayer then
+                    local targetHrp = getHrp(pl)
+                    if targetHrp then
+                        myHrp.CFrame = targetHrp.CFrame * CFrame.new(0, 0, 3)
+                        foundTarget = true
+                        Rayfield:Notify({Title = "Teleporte", Content = "Teleportado para: " .. pl.DisplayName, Duration = 2.5})
+                        break
+                    end
+                end
+            end
+        end
+
+        if not foundTarget then
+            Rayfield:Notify({Title = "Aviso", Content = "Nenhum local ou jogador encontrado.", Duration = 2.5})
+        end
+    end
+})
+
+TabCombat:CreateToggle({Name = "Auto Kill Piggy", CurrentValue = false, Callback = function(v) State.auto.killPiggyActive = v end})
+TabCombat:CreateToggle({Name = "Auto Kill Traidor", CurrentValue = false, Callback = function(v) State.auto.killTraitorActive = v end})
+
+local TabItems = Window:CreateTab("Itens", 4483362458)
+local function updateMapCache()
+    State.cache.mapItems = {}
+    State.cache.mapExits = {}
+    if not isInGameRound() then return end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isItem(obj) then table.insert(State.cache.mapItems, obj)
+        elseif isExit(obj) then table.insert(State.cache.mapExits, obj) end
+    end
+end
+
+TabItems:CreateInput({
+    Name = "Pesquisar Item",
+    PlaceholderText = "Ex: Key, Hammer...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text) State.searchQuery = string.lower(text) end
+})
+
+local TabEsp = Window:CreateTab("ESP Visual", 4483362458)
+local function updateESP()
+    local activeTargets = {}
+    if not isInGameRound() then
+        for obj, vt in pairs(State.cache.espObjects) do
+            if vt.hl then vt.hl:Destroy() end if vt.bb then vt.bb:Destroy() end
+            State.cache.espObjects[obj] = nil
+        end
+        return
+    end
+
+    local function proc(target, txt, col)
+        if not target or not target.Parent then return end
+        activeTargets[target] = true
+        local ex = State.cache.espObjects[target]
+        if ex then
+            if ex.hl then ex.hl.FillColor = col end
+        else
+            local p = getBasePart(target)
+            if not p then return end
+            local hl = Instance.new("Highlight")
+            hl.Adornee = target hl.FillColor = col hl.OutlineColor = col hl.FillTransparency = 0.6 hl.Parent = target
+            State.cache.espObjects[target] = {hl = hl}
+        end
+    end
+
+    if State.esp.players then
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LocalPlayer and pl.Character and isAlive(pl) and not isPiggyPlayer(pl) and not isTraitorPlayer(pl) then
+                proc(pl.Character, pl.DisplayName, Color3.fromRGB(55, 135, 245))
+            end
+        end
+    end
+    if State.esp.piggyPlayer then
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if isPiggyPlayer(pl) and pl.Character then proc(pl.Character, "Piggy", Color3.fromRGB(255, 10, 20)) end
+        end
+    end
+    if State.esp.piggyBot then
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if isBot(obj) then proc(obj, "Bot", Color3.fromRGB(40, 220, 100)) end
+        end
+    end
+
+    for obj, vt in pairs(State.cache.espObjects) do
+        if not activeTargets[obj] then
+            if vt.hl then vt.hl:Destroy() end
+            State.cache.espObjects[obj] = nil
+        end
+    end
+end
+
+TabEsp:CreateToggle({Name = "ESP Sobreviventes", CurrentValue = false, Callback = function(v) State.esp.players = v end})
+TabEsp:CreateToggle({Name = "ESP Piggy Player", CurrentValue = false, Callback = function(v) State.esp.piggyPlayer = v end})
+TabEsp:CreateToggle({Name = "ESP Monstro / Bot", CurrentValue = false, Callback = function(v) State.esp.piggyBot = v end})
+
+local TabPlayer = Window:CreateTab("Jogador", 4483362458)
+
+TabPlayer:CreateToggle({Name = "God Mode", CurrentValue = false, Callback = function(v) State.move.godMode = v if v then updateHazardCache() end end})
+TabPlayer:CreateToggle({Name = "Super Velocidade", CurrentValue = false, Callback = function(v) State.move.speedOn = v if not v then local h = getHum() if h then h.WalkSpeed = 16 end end end})
+TabPlayer:CreateSlider({Name = "Velocidade", Range = {16, 100}, Increment = 1, CurrentValue = 24, Callback = function(v) State.move.speedVal = v end})
+TabPlayer:CreateToggle({Name = "Super Pulo", CurrentValue = false, Callback = function(v) State.move.jumpOn = v if not v then local h = getHum() if h then h.JumpPower = 50 end end end})
+TabPlayer:CreateSlider({Name = "Força do Pulo", Range = {50, 150}, Increment = 1, CurrentValue = 65, Callback = function(v) State.move.jumpVal = v end})
+TabPlayer:CreateToggle({Name = "Noclip", CurrentValue = false, Callback = function(v) State.move.noclip = v end})
+TabPlayer:CreateToggle({Name = "Pulo Infinito", CurrentValue = false, Callback = function(v) State.move.infJump = v end})
+
+addConn(UserInputService.JumpRequest:Connect(function()
+    if State.move.infJump and isAlive() then
+        local h = getHum()
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end))
+
+local TabOptions = Window:CreateTab("Opções", 4483362458)
+TabOptions:CreateToggle({Name = "Fullbright (Remover Escuridão)", CurrentValue = false, Callback = function(v) State.vis.fullbright = v applyFullbright(v) end})
+
+-- Loop Principal Otimizado (Intervalos Maiores para Economizar Processamento)
+local lastUpdate = 0
+addConn(RunService.Heartbeat:Connect(function()
+    local clock = tick()
+    local h = getHum()
+
+    if h and isAlive() then
+        if State.move.speedOn then h.WalkSpeed = State.move.speedVal end
+        if State.move.jumpOn then h.JumpPower = State.move.jumpVal end
+    end
+
+    if State.move.noclip then
+        local char = getChar()
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then part.CanCollide = false end
+            end
+        end
+    end
+
+    if State.move.godMode then processGodMode() end
+
+    -- Executa verificações pesadas a cada 1 segundo em vez de todo frame (Ganha muito FPS)
+    if clock - lastUpdate > 1.0 then
+        lastUpdate = clock
+        updateMapCache()
+        updateESP()
+    end
+end))
+
+Rayfield:Notify({Title = "Utility Hub V1.20 Light", Content = "Carregado com sucesso e otimizado!", Duration = 3})
+print("[PIGGY_HUB_V1.20_LIGHT] Pronto para uso!")
